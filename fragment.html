@@ -1,0 +1,61 @@
+<div class="sr-card" id="sr-root">
+  <div class="sr-loading" id="sr-loading">
+    <div class="sr-spinner"></div>
+    <span>Ładowanie danych zgłoszenia…</span>
+  </div>
+
+  <div id="sr-content" class="sr-hidden">
+    <div class="sr-header">
+      <img id="sr-type-icon" class="sr-type-icon" alt="">
+      <a id="sr-key" class="sr-key" target="_top"></a>
+      <span id="sr-status" class="sr-lozenge"></span>
+    </div>
+
+    <h3 id="sr-summary" class="sr-summary"></h3>
+
+    <div class="sr-stats">
+      <div class="sr-stat">
+        <span class="sr-stat-value" id="sr-age">–</span>
+        <span class="sr-stat-label">dni otwarte</span>
+      </div>
+      <div class="sr-stat">
+        <span class="sr-stat-value" id="sr-comments">–</span>
+        <span class="sr-stat-label">komentarze</span>
+      </div>
+      <div class="sr-stat">
+        <span class="sr-stat-value" id="sr-due">–</span>
+        <span class="sr-stat-label">do terminu</span>
+      </div>
+    </div>
+
+    <div class="sr-row">
+      <span class="sr-label">Przypisany</span>
+      <span class="sr-person">
+        <img id="sr-avatar" class="sr-avatar" alt="">
+        <span id="sr-assignee"></span>
+      </span>
+    </div>
+    <div class="sr-row">
+      <span class="sr-label">Priorytet</span>
+      <span class="sr-person">
+        <img id="sr-prio-icon" class="sr-prio-icon" alt="">
+        <span id="sr-priority"></span>
+      </span>
+    </div>
+
+    <div id="sr-subtasks-box" class="sr-hidden">
+      <div class="sr-row">
+        <span class="sr-label">Podzadania</span>
+        <span id="sr-subtasks-count"></span>
+      </div>
+      <div class="sr-progress"><div id="sr-progress-bar" class="sr-progress-bar"></div></div>
+    </div>
+
+    <div class="sr-footer">
+      <span id="sr-mode" class="sr-mode"></span>
+      <button id="sr-refresh" class="sr-btn">↻ Odśwież</button>
+    </div>
+  </div>
+
+  <div id="sr-error" class="sr-error sr-hidden"></div>
+</div>
