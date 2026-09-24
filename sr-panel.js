@@ -1,10 +1,21 @@
 /*
- * ScriptRunner for Jira Cloud – Script Fragment (web panel) – wersja v2
+ * ScriptRunner for Jira Cloud – Script Fragment (web panel) – wersja v4 (Approve/Reject + Adaptavist Bridge / Forge / Connect)
  * Cały widok (style + HTML) jest budowany przez ten skrypt,
  * więc działa nawet jeśli plik HTML/CSS się nie wczyta.
  */
 (function () {
   'use strict';
+
+  // ---------- KONFIGURACJA przycisków Approve / Reject ----------
+  var CONFIG = {
+    approveLabel: 'approved',
+    rejectLabel: 'rejected',
+    approveComment: '✅ Approved – zatwierdzone z panelu Script Fragment.',
+    rejectComment: '❌ Rejected – odrzucone z panelu Script Fragment.',
+    // Opcjonalnie: nazwa przejścia w workflow (np. 'Approve'). Puste = bez zmiany statusu.
+    approveTransition: '',
+    rejectTransition: ''
+  };
 
   // ---------- 1. Style (wstrzykiwane z JS) ----------
   var CSS = [
@@ -31,7 +42,16 @@
     '.sr-btn{border:0;border-radius:4px;padding:5px 10px;background:#0052cc;color:#fff;font-size:12px;cursor:pointer}',
     '.sr-err{color:#bf2600;background:#ffebe6;padding:10px;border-radius:6px;font-size:12px;white-space:pre-wrap}',
     '.sr-spin{display:inline-block;width:14px;height:14px;border:3px solid #deebff;border-top-color:#0052cc;border-radius:50%;animation:srs .8s linear infinite;vertical-align:middle;margin-right:8px}',
-    '@keyframes srs{to{transform:rotate(360deg)}}'
+    '@keyframes srs{to{transform:rotate(360deg)}}',
+    '.sr-dec{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0 4px}',
+    '.sr-ok,.sr-no{border:0;border-radius:6px;padding:9px;font-size:13px;font-weight:700;color:#fff;cursor:pointer}',
+    '.sr-ok{background:#1f845a}.sr-ok:hover{background:#216e4e}',
+    '.sr-no{background:#c9372c}.sr-no:hover{background:#ae2e24}',
+    '.sr-ok[disabled],.sr-no[disabled]{opacity:.5;cursor:default}',
+    '.sr-badge{margin:12px 0 4px;padding:9px;border-radius:6px;font-weight:700;text-align:center}',
+    '.sr-badge.ok{background:#dcfff1;color:#216e4e}.sr-badge.no{background:#ffeceb;color:#ae2e24}',
+    '.sr-undo{background:none;border:0;color:#0c66e4;cursor:pointer;font-size:12px;text-decoration:underline;margin-left:6px}',
+    '.sr-msg{font-size:12px;margin-top:6px;color:#6b778c;text-align:center}'
   ].join('\n');
 
   var st = document.createElement('style');
@@ -55,7 +75,7 @@
     });
   }
   function days(a, b) { return Math.round((b - a) / 864e5); }
-  function log() { try { console.log.apply(console, ['[SR v2]'].concat([].slice.call(arguments))); } catch (e) {} }
+  function log() { try { console.log.apply(console, ['[SR v4]'].concat([].slice.call(arguments))); } catch (e) {} }
 
   function showLoading(msg) {
     root().innerHTML = '<div class="sr-card"><span class="sr-spin"></span>' + esc(msg) + '</div>';
@@ -137,6 +157,15 @@
       h += '<div class="sr-row"><span class="sr-muted">Podzadania</span><span>' + done + ' / ' + subs.length + '</span></div>';
       h += '<div class="sr-bar"><div id="sr-pb"></div></div>';
     }
+    var labels = f.labels || [];
+    var isOk = labels.indexOf(CONFIG.approveLabel) >= 0, isNo = labels.indexOf(CONFIG.rejectLabel) >= 0;
+    if (isOk || isNo) {
+      h += '<div class="sr-badge ' + (isOk ? 'ok' : 'no') + '">' + (isOk ? '✅ Zatwierdzone' : '❌ Odrzucone') +
+        (live ? '<button class="sr-undo" id="sr-undo">cofnij</button>' : '') + '</div>';
+    } else {
+      h += '<div class="sr-dec"><button class="sr-ok" id="sr-ok">✓ Approve</button><button class="sr-no" id="sr-no">✕ Reject</button></div>';
+    }
+    h += '<div class="sr-msg" id="sr-msg"></div>';
     if (last.length) {
       h += '<div class="sr-muted" style="margin-top:8px">Ostatnie komentarze</div>';
       last.forEach(function (c) {
@@ -145,63 +174,193 @@
       });
     }
     h += '<div class="sr-foot"><span class="sr-muted">' +
-      (live ? 'Na żywo · ' + esc((window.AdaptavistBridgeContext.context || {}).location || '') : 'Tryb demo – brak AdaptavistBridge') +
+      (live ? 'Na żywo · ' + esc(lastInfo) : 'Tryb demo · ' + esc(lastInfo)) +
       '</span><button class="sr-btn" id="sr-r">↻ Odśwież</button></div>';
     h += '</div>';
 
     root().innerHTML = h;
     document.getElementById('sr-r').onclick = load;
+    wireDecision(issue.key, live);
     var pb = document.getElementById('sr-pb');
     if (pb) setTimeout(function () { pb.style.width = pct + '%'; }, 50);
   }
 
-  // ---------- 5. Pobieranie danych ----------
+  // ---------- 5. Pobieranie danych (Adaptavist Bridge / Forge / Connect AP) ----------
+  var FIELDS = 'summary,status,priority,assignee,reporter,created,updated,duedate,labels,comment,subtasks';
+
   function parse(res) {
     if (res && typeof res.body === 'string') res = res.body;
     return typeof res === 'string' ? JSON.parse(res) : res;
   }
 
-  function bridgeReady() {
-    return window.AdaptavistBridge && window.AdaptavistBridgeContext &&
-      window.AdaptavistBridgeContext.context && window.AdaptavistBridgeContext.context.issueKey;
+  function diag() {
+    var keys = [];
+    try { keys = Object.keys(window).filter(function (k) { return /bridge|adaptavist|^AP$|forge|context/i.test(k) && !/^on|^isSecureContext$/.test(k); }); } catch (e) {}
+    return keys.join(', ') || '(brak)';
   }
 
-  // Czekamy na bridge do 5 s (bywa wstrzykiwany z opóźnieniem)
-  function waitForBridge(cb) {
+  // Wykrywa dostępny mechanizm; zwraca {name, getKey(): Promise<{key,location}>, get(url): Promise<obj>}
+  function detect() {
+    var w = window;
+    if (w.AdaptavistBridge && w.AdaptavistBridgeContext && w.AdaptavistBridgeContext.context &&
+        w.AdaptavistBridgeContext.context.issueKey) {
+      return {
+        name: 'AdaptavistBridge',
+        getKey: function () {
+          var c = w.AdaptavistBridgeContext.context;
+          return Promise.resolve({ key: c.issueKey, location: c.location });
+        },
+        get: function (url) { return w.AdaptavistBridge.request({ url: url, type: 'GET' }).then(parse); },
+        send: function (method, url, body) {
+          return w.AdaptavistBridge.request({ url: url, type: method, data: JSON.stringify(body), contentType: 'application/json' });
+        }
+      };
+    }
+    if (w.__bridge && typeof w.__bridge.callBridge === 'function') {
+      return {
+        name: 'Forge bridge',
+        getKey: function () {
+          return w.__bridge.callBridge('getContext').then(function (ctx) {
+            log('forge context:', ctx);
+            var ext = (ctx && ctx.extension) || {};
+            var key = (ext.issue && ext.issue.key) || (ext.issueKey) || null;
+            return { key: key, location: ctx && ctx.moduleKey, raw: ctx };
+          });
+        },
+        get: function (url) {
+          return w.__bridge.callBridge('fetchProduct', {
+            product: 'jira', restPath: url,
+            fetchRequestInit: { method: 'GET', headers: { Accept: 'application/json' } }
+          }).then(function (r) {
+            log('forge fetch:', r);
+            if (r && r.status && r.status >= 400) throw new Error('HTTP ' + r.status + ' ' + (r.statusText || ''));
+            return parse(r);
+          });
+        },
+        send: function (method, url, body) {
+          return w.__bridge.callBridge('fetchProduct', {
+            product: 'jira', restPath: url,
+            fetchRequestInit: { method: method, headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) }
+          }).then(function (r) {
+            log('forge send:', r);
+            if (r && r.status && r.status >= 400) throw new Error('HTTP ' + r.status + ' ' + (r.body || r.statusText || ''));
+            return r;
+          });
+        }
+      };
+    }
+    if (w.AP && w.AP.context && w.AP.request) {
+      return {
+        name: 'Connect AP',
+        getKey: function () {
+          return new Promise(function (res) {
+            w.AP.context.getContext(function (c) { res({ key: c && c.jira && c.jira.issue && c.jira.issue.key, location: 'connect' }); });
+          });
+        },
+        get: function (url) {
+          return new Promise(function (res, rej) {
+            w.AP.request({ url: url, type: 'GET', success: function (t) { res(parse(t)); }, error: function (x) { rej(new Error('HTTP ' + (x && x.status))); } });
+          });
+        },
+        send: function (method, url, body) {
+          return new Promise(function (res, rej) {
+            w.AP.request({ url: url, type: method, data: JSON.stringify(body), contentType: 'application/json',
+              success: res, error: function (x) { rej(new Error('HTTP ' + (x && x.status))); } });
+          });
+        }
+      };
+    }
+    return null;
+  }
+
+  function waitForApi(cb) {
     var t0 = Date.now();
     (function tick() {
-      if (bridgeReady()) return cb(true);
-      if (Date.now() - t0 > 5000) return cb(false);
-      setTimeout(tick, 150);
+      var api = detect();
+      if (api) return cb(api);
+      if (Date.now() - t0 > 8000) return cb(null);
+      setTimeout(tick, 200);
     })();
   }
 
-  function load() {
-    showLoading('JS działa – czekam na AdaptavistBridge…');
-    waitForBridge(function (ok) {
-      log('bridge:', ok, window.AdaptavistBridgeContext);
-      if (!ok) { render(MOCK, false); return; }
+  var lastInfo = '';
+  var currentApi = null;
 
-      var key = window.AdaptavistBridgeContext.context.issueKey;
-      showLoading('Pobieram ' + key + '…');
+  function setMsg(t) { var m = document.getElementById('sr-msg'); if (m) m.textContent = t; }
+
+  function transitionByName(key, name) {
+    if (!name) return Promise.resolve();
+    var url = '/rest/api/2/issue/' + encodeURIComponent(key) + '/transitions';
+    return currentApi.get(url).then(function (d) {
+      var t = (d.transitions || []).filter(function (x) { return x.name.toLowerCase() === name.toLowerCase(); })[0];
+      if (!t) throw new Error('Brak przejścia „' + name + '” dla tego zgłoszenia');
+      return currentApi.send('POST', url, { transition: { id: t.id } });
+    });
+  }
+
+  function decide(key, approve) {
+    var add = approve ? CONFIG.approveLabel : CONFIG.rejectLabel;
+    var rem = approve ? CONFIG.rejectLabel : CONFIG.approveLabel;
+    var base = '/rest/api/2/issue/' + encodeURIComponent(key);
+    return currentApi.send('PUT', base, { update: { labels: [{ add: add }, { remove: rem }] } })
+      .then(function () { return currentApi.send('POST', base + '/comment', { body: approve ? CONFIG.approveComment : CONFIG.rejectComment }); })
+      .then(function () { return transitionByName(key, approve ? CONFIG.approveTransition : CONFIG.rejectTransition); });
+  }
+
+  function undo(key) {
+    return currentApi.send('PUT', '/rest/api/2/issue/' + encodeURIComponent(key),
+      { update: { labels: [{ remove: CONFIG.approveLabel }, { remove: CONFIG.rejectLabel }] } });
+  }
+
+  function wireDecision(key, live) {
+    var ok = document.getElementById('sr-ok'), no = document.getElementById('sr-no'), un = document.getElementById('sr-undo');
+    function run(p, label) {
+      if (ok) ok.disabled = true; if (no) no.disabled = true;
+      setMsg(label + '…');
+      p.then(function () { setMsg('Gotowe ✓'); setTimeout(load, 700); })
+       .catch(function (e) {
+         log('decyzja błąd:', e);
+         setMsg('Błąd: ' + (e && (e.message || JSON.stringify(e))));
+         if (ok) ok.disabled = false; if (no) no.disabled = false;
+       });
+    }
+    if (!live) {
+      [ok, no].forEach(function (b) { if (b) b.onclick = function () { setMsg('Tryb demo – przyciski działają tylko w Jirze.'); }; });
+      return;
+    }
+    if (ok) ok.onclick = function () { run(decide(key, true), 'Zatwierdzam'); };
+    if (no) no.onclick = function () { run(decide(key, false), 'Odrzucam'); };
+    if (un) un.onclick = function () { run(undo(key), 'Cofam'); };
+  }
+
+  function load() {
+    showLoading('JS działa – szukam połączenia z Jirą…');
+    waitForApi(function (api) {
+      if (!api) {
+        lastInfo = 'Nie znaleziono bridge. Globalne: ' + diag();
+        log(lastInfo);
+        render(MOCK, false);
+        return;
+      }
+      log('używam:', api.name);
+      currentApi = api;
       var finished = false;
       var timer = setTimeout(function () {
-        if (!finished) showError('Brak odpowiedzi z Jiry po 10 s.\nissueKey: ' + key);
+        if (!finished) showError('Brak odpowiedzi z Jiry po 10 s (' + api.name + ').');
       }, 10000);
 
-      window.AdaptavistBridge.request({
-        url: '/rest/api/2/issue/' + encodeURIComponent(key) +
-          '?fields=summary,status,priority,assignee,reporter,created,updated,duedate,labels,comment,subtasks',
-        type: 'GET'
-      }).then(function (res) {
+      api.getKey().then(function (info) {
+        if (!info || !info.key) throw new Error('Brak klucza zgłoszenia w kontekście (' + api.name + ')');
+        showLoading('Pobieram ' + info.key + ' przez ' + api.name + '…');
+        lastInfo = api.name + (info.location ? ' · ' + info.location : '');
+        return api.get('/rest/api/2/issue/' + encodeURIComponent(info.key) + '?fields=' + FIELDS);
+      }).then(function (issue) {
         finished = true; clearTimeout(timer);
-        log('odpowiedź:', res);
-        try { render(parse(res), true); }
-        catch (e) { showError('Nie udało się odczytać odpowiedzi: ' + e.message); }
-      }, function (err) {
+        render(issue, true);
+      }).catch(function (err) {
         finished = true; clearTimeout(timer);
         log('błąd:', err);
-        showError('Błąd REST: ' + (err && (err.message || err.statusText || JSON.stringify(err))));
+        showError('Błąd (' + api.name + '): ' + (err && (err.message || JSON.stringify(err))));
       });
     });
   }
