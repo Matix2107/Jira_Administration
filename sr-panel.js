@@ -75,7 +75,7 @@
     });
   }
   function days(a, b) { return Math.round((b - a) / 864e5); }
-  function log() { try { console.log.apply(console, ['[SR v4]'].concat([].slice.call(arguments))); } catch (e) {} }
+  function log() { try { console.log.apply(console, ['[SR v4.1]'].concat([].slice.call(arguments))); } catch (e) {} }
 
   function showLoading(msg) {
     root().innerHTML = '<div class="sr-card"><span class="sr-spin"></span>' + esc(msg) + '</div>';
@@ -134,6 +134,7 @@
     var last = comments.slice(-2).reverse();
 
     var h = '';
+    if (!live && lastInfo) h += '<div class="sr-err" style="margin-bottom:6px">' + esc(lastInfo) + '</div>';
     h += '<div class="sr-card">';
     h += '<div class="sr-head"><a class="sr-key" target="_top" href="/browse/' + esc(issue.key) + '">' + esc(issue.key) + '</a>';
     h += '<span class="sr-loz ' + esc(cat) + '">' + esc(f.status ? f.status.name : '?') + '</span></div>';
@@ -194,14 +195,34 @@
   }
 
   function diag() {
-    var keys = [];
-    try { keys = Object.keys(window).filter(function (k) { return /bridge|adaptavist|^AP$|forge|context/i.test(k) && !/^on|^isSecureContext$/.test(k); }); } catch (e) {}
-    return keys.join(', ') || '(brak)';
+    function keysOf(w) {
+      try { return Object.keys(w).filter(function (k) { return /bridge|adaptavist|^AP$|forge|context|sr/i.test(k) && !/^on|^isSecureContext$/.test(k); }).join(',') || '-'; }
+      catch (e) { return 'brak dostępu'; }
+    }
+    var inFrame = window.parent !== window;
+    var parentInfo = inFrame ? keysOf(window.parent) : 'nie w iframe';
+    var origin = ''; try { origin = location.origin + location.pathname.slice(0, 40); } catch (e) {}
+    return 'origin=' + origin + ' | window: ' + keysOf(window) + ' | parent: ' + parentInfo;
   }
 
   // Wykrywa dostępny mechanizm; zwraca {name, getKey(): Promise<{key,location}>, get(url): Promise<obj>}
+  function candidates() {
+    var list = [window];
+    try { if (window.parent && window.parent !== window && window.parent.document) list.push(window.parent); } catch (e) {}
+    try { if (window.top && list.indexOf(window.top) < 0 && window.top.document) list.push(window.top); } catch (e) {}
+    return list;
+  }
+
   function detect() {
-    var w = window;
+    var c = candidates();
+    for (var i = 0; i < c.length; i++) {
+      var api = detectIn(c[i]);
+      if (api) { if (i > 0) api.name += ' (parent)'; return api; }
+    }
+    return null;
+  }
+
+  function detectIn(w) {
     if (w.AdaptavistBridge && w.AdaptavistBridgeContext && w.AdaptavistBridgeContext.context &&
         w.AdaptavistBridgeContext.context.issueKey) {
       return {
